@@ -1,0 +1,16 @@
+torch
+torchvision
+opencv-python
+mediapipe
+numpy
+pandas
+requests
+PyYAML
+tqdm
+matplotlib
+seaborn
+Pillow
+websockets
+flask-socketio
+flask
+flask-cors
