@@ -8,6 +8,8 @@ export interface DetectionResult {
     right_hand: Keypoint[] | null;
   };
   sequence_length: number;
+  frame_width?: number;
+  frame_height?: number;
 }
 
 export interface Keypoint {

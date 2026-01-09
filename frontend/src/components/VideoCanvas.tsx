@@ -5,12 +5,14 @@ interface VideoCanvasProps {
   result: DetectionResult | null;
   width?: number;
   height?: number;
+  videoElement?: HTMLVideoElement | null;
 }
 
 export const VideoCanvas: React.FC<VideoCanvasProps> = React.memo(({ 
   result, 
   width = 640, 
-  height = 480 
+  height = 480,
+  videoElement
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -21,36 +23,47 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = React.memo(({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Clear canvas
     ctx.clearRect(0, 0, width, height);
 
-    // Draw bounding box
-    if (result?.bounding_box) {
+    if (result?.bounding_box && result.bounding_box[2] > 0 && result.bounding_box[3] > 0) {
       const [x1, y1, x2, y2] = result.bounding_box;
       
-      // Draw bounding box rectangle
+      let scaleX = 1;
+      let scaleY = 1;
+      
+      if (result.frame_width && result.frame_height && videoElement) {
+        const displayWidth = videoElement.clientWidth || width;
+        const displayHeight = videoElement.clientHeight || height;
+        
+        scaleX = displayWidth / result.frame_width;
+        scaleY = displayHeight / result.frame_height;
+      }
+      
+      const scaledX1 = x1 * scaleX;
+      const scaledY1 = y1 * scaleY;
+      const scaledX2 = x2 * scaleX;
+      const scaledY2 = y2 * scaleY;
+      
       ctx.strokeStyle = '#00FF00';
       ctx.lineWidth = 3;
-      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.strokeRect(scaledX1, scaledY1, scaledX2 - scaledX1, scaledY2 - scaledY1);
 
-      // Draw label background
-      if (result.detected_word !== '...') {
-        const label = `${result.detected_word} (${Math.round(result.confidence * 100)}%)`;
-        ctx.font = 'bold 18px Arial';
-        const metrics = ctx.measureText(label);
-        const labelWidth = metrics.width + 10;
-        const labelHeight = 25;
-        
-        // Draw background rectangle for text
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(x1, y1 - labelHeight - 5, labelWidth, labelHeight);
-        
-        // Draw text
-        ctx.fillStyle = '#00FF00';
-        ctx.fillText(label, x1 + 5, y1 - 10);
-      }
+      const label = result.detected_word !== '...'
+        ? `${result.detected_word} (${Math.round(result.confidence * 100)}%)`
+        : `... (${Math.round(result.confidence * 100)}%)`;
+      
+      ctx.font = 'bold 18px Arial';
+      const metrics = ctx.measureText(label);
+      const labelWidth = metrics.width + 10;
+      const labelHeight = 25;
+      
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(scaledX1, scaledY1 - labelHeight - 5, labelWidth, labelHeight);
+      
+      ctx.fillStyle = '#00FF00';
+      ctx.fillText(label, scaledX1 + 5, scaledY1 - 10);
     }
-  }, [result, width, height]);
+  }, [result, width, height, videoElement]);
 
   const canvasStyle = useMemo(() => ({
     position: 'absolute' as const,

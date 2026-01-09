@@ -12,25 +12,20 @@ const MAX_HISTORY_ITEMS = 50;
 export interface AppSettings {
   fps: number;
   showKeypoints: boolean;
-  showBoundingBox: boolean;
   recordHistory: boolean;
   confidenceThreshold: number;
-  emergencyMode: boolean;
-  geminiApiKey: string;
+  isDisabled: boolean;
 }
 
 const defaultSettings: AppSettings = {
   fps: 15,
   showKeypoints: true,
-  showBoundingBox: true,
   recordHistory: true,
   confidenceThreshold: 0.7,
-  emergencyMode: false,
-  geminiApiKey: '',
+  isDisabled: false,
 };
 
 export const storage = {
-  // History Management
   getHistory(): HistoryItem[] {
     try {
       const stored = localStorage.getItem(HISTORY_KEY);
@@ -46,7 +41,7 @@ export const storage = {
   addToHistory(result: DetectionResult): void {
     try {
       if (result.detected_word === '...' || result.confidence < 0.5) {
-        return; // Don't store low confidence or placeholder results
+        return;
       }
 
       const history = this.getHistory();
@@ -71,7 +66,6 @@ export const storage = {
     }
   },
 
-  // Settings Management
   getSettings(): AppSettings {
     try {
       const stored = localStorage.getItem(SETTINGS_KEY);

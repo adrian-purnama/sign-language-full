@@ -5,11 +5,11 @@ import { DetectionHistory } from './components/DetectionHistory';
 import { SettingsPanel } from './components/SettingsPanel';
 import { StatsPanel } from './components/StatsPanel';
 import { VideoCanvas } from './components/VideoCanvas';
+import { ChatPanel, ChatMessage } from './components/ChatPanel';
 import { WebSocketClient } from './websocket';
 import { DetectionResult } from './types';
 import { useDetectionHistory } from './hooks/useDetectionHistory';
 import { storage, AppSettings } from './utils/storage';
-import { translateWithGemini } from './utils/gemini';
 import './App.css';
 
 const WS_URL = 'http://localhost:5000';
@@ -23,14 +23,12 @@ function App() {
   const wsClientRef = useRef<WebSocketClient | null>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [videoDimensions, setVideoDimensions] = useState({ width: 640, height: 480 });
-  const geminiProcessingRef = useRef(false);
-  const lastGeminiCallRef = useRef<number>(0);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   const { history, addDetection, clearHistory, stats } = useDetectionHistory(
     settings.recordHistory
   );
 
-  // Handle settings changes
   const handleSettingsChange = useCallback((newSettings: Partial<AppSettings>) => {
     const updated = { ...settings, ...newSettings };
     setSettings(updated);
@@ -43,12 +41,10 @@ function App() {
     setSettings(defaults);
   }, []);
 
-  // Handle detection results
   const handleResult = useCallback((data: DetectionResult) => {
     setResult(data);
     setError(null);
     
-    // Only add to history if confidence meets threshold and word is detected
     if (
       settings.recordHistory &&
       data.detected_word !== '...' &&
@@ -58,70 +54,11 @@ function App() {
     }
   }, [settings.recordHistory, settings.confidenceThreshold, addDetection]);
 
-  // Handle frame capture with settings
-  const handleFrame = useCallback(async (frameData: string) => {
-    // Emergency mode: use Gemini API
-    if (settings.emergencyMode) {
-      // if (!settings.geminiApiKey || settings.geminiApiKey.trim() === '') {
-      //   setError('Please enter your Gemini API key in Settings');
-      //   return;
-      // }
-
-      // Throttle Gemini calls to avoid rate limits (max 1 call per 6 seconds for 10 RPM limit)
-      const now = Date.now();
-      if (now - lastGeminiCallRef.current < 6000 || geminiProcessingRef.current) {
-        return;
-      }
-      
-      geminiProcessingRef.current = true;
-      lastGeminiCallRef.current = now;
-      
-      try {
-        const geminiResult = await translateWithGemini(frameData, settings.geminiApiKey.trim());
-        
-        // Calculate bounding box for center area of video (where sign language typically happens)
-        // Use 70% of width and 80% of height, centered
-        const videoWidth = videoDimensions.width || 640;
-        const videoHeight = videoDimensions.height || 480;
-        const boxWidth = videoWidth * 0.7;
-        const boxHeight = videoHeight * 0.8;
-        const x1 = (videoWidth - boxWidth) / 2;
-        const y1 = (videoHeight - boxHeight) / 2;
-        const x2 = x1 + boxWidth;
-        const y2 = y1 + boxHeight;
-        
-        const emergencyResult: DetectionResult = {
-          detected_word: geminiResult.translation,
-          confidence: geminiResult.confidence || 0.85,
-          bounding_box: [Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2)],
-          keypoints: { pose: null, left_hand: null, right_hand: null },
-          sequence_length: 30, // Always ready in emergency mode
-        };
-        
-        handleResult(emergencyResult);
-      } catch (error) {
-        console.error('Gemini translation error:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        setError(`Gemini Error: ${errorMessage}`);
-        // Show error result
-        handleResult({
-          detected_word: '...',
-          confidence: 0.0,
-          bounding_box: [0, 0, 0, 0],
-          keypoints: { pose: null, left_hand: null, right_hand: null },
-          sequence_length: 0,
-        });
-      } finally {
-        geminiProcessingRef.current = false;
-      }
-      return;
-    }
-    
-    // Normal mode: use WebSocket
+  const handleFrame = useCallback((frameData: string) => {
     if (wsClientRef.current && wsClientRef.current.isConnected()) {
       wsClientRef.current.sendFrame(frameData);
     }
-  }, [settings.emergencyMode, settings.geminiApiKey, handleResult]);
+  }, []);
 
   const handleError = useCallback((err: string) => {
     setError(err);
@@ -137,6 +74,22 @@ function App() {
     setIsConnected(false);
   }, []);
 
+  const handleChatMessage = useCallback((data: { text: string; sender: string; timestamp: number }) => {
+    const newMessage: ChatMessage = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      text: data.text,
+      timestamp: data.timestamp || Date.now(),
+      sender: data.sender === 'disabled' ? 'disabled' : 'user',
+    };
+    setChatMessages((prev) => [...prev, newMessage]);
+  }, []);
+
+  const handleSendMessage = useCallback((message: string) => {
+    if (wsClientRef.current && wsClientRef.current.isConnected() && !settings.isDisabled) {
+      wsClientRef.current.sendMessage(message);
+    }
+  }, [settings.isDisabled]);
+
   const handleVideoReady = useCallback((video: HTMLVideoElement) => {
     setVideoElement(video);
     setVideoDimensions({
@@ -145,31 +98,17 @@ function App() {
     });
   }, []);
 
-  // Initialize WebSocket only when emergency mode is OFF
   useEffect(() => {
-    // Don't connect WebSocket if emergency mode is enabled
-    if (settings.emergencyMode) {
-      // Disconnect if already connected
-      if (wsClientRef.current) {
-        wsClientRef.current.disconnect();
-        wsClientRef.current = null;
-      }
-      setIsConnected(false);
-      return;
-    }
-
-    // Connect WebSocket for normal mode
     const client = new WebSocketClient();
     wsClientRef.current = client;
 
-    client.connect(WS_URL, handleResult, handleError, handleConnect, handleDisconnect);
+    client.connect(WS_URL, handleResult, handleError, handleConnect, handleDisconnect, handleChatMessage);
 
     return () => {
       client.disconnect();
     };
-  }, [settings.emergencyMode, handleResult, handleError, handleConnect, handleDisconnect]);
+  }, [handleResult, handleError, handleConnect, handleDisconnect, handleChatMessage]);
 
-  // Update video dimensions
   useEffect(() => {
     if (!videoElement) return;
 
@@ -195,7 +134,6 @@ function App() {
     };
   }, [videoElement]);
 
-  // Memoize video capture component props
   const videoCaptureProps = useMemo(() => ({
     onFrame: handleFrame,
     onVideoReady: handleVideoReady,
@@ -207,19 +145,10 @@ function App() {
       <header className="App-header">
         <h1>Sign Language Translation</h1>
         <div className="connection-status">
-          {settings.emergencyMode ? (
-            <>
-              <span className="status-indicator connected" />
-              <span>Connected</span>
-            </>
-          ) : (
-            <>
-              <span
-                className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}
-              />
-              <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
-            </>
-          )}
+          <span
+            className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}
+          />
+          <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
         </div>
       </header>
 
@@ -232,6 +161,7 @@ function App() {
                 result={result}
                 width={videoDimensions.width}
                 height={videoDimensions.height}
+                videoElement={videoElement}
               />
             )}
           </div>
@@ -239,6 +169,12 @@ function App() {
 
         <div className="results-section">
           <DetectionDisplay result={result} />
+          
+          <ChatPanel
+            isDisabled={settings.isDisabled}
+            onSendMessage={handleSendMessage}
+            messages={chatMessages}
+          />
           
           <StatsPanel stats={stats} />
           

@@ -24,15 +24,27 @@ export const VideoCapture: React.FC<VideoCaptureProps> = React.memo(({ onFrame, 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
+    const originalWidth = video.videoWidth;
+    const originalHeight = video.videoHeight;
+    
+    const maxWidth = 480;
+    const maxHeight = 360;
+    let finalWidth = originalWidth;
+    let finalHeight = originalHeight;
+    
+    if (originalWidth > maxWidth || originalHeight > maxHeight) {
+      const scale = Math.min(maxWidth / originalWidth, maxHeight / originalHeight);
+      finalWidth = Math.floor(originalWidth * scale);
+      finalHeight = Math.floor(originalHeight * scale);
+    }
+    
+    canvas.width = finalWidth;
+    canvas.height = finalHeight;
+    ctx.drawImage(video, 0, 0, finalWidth, finalHeight);
 
-    // Convert to JPEG with quality 0.8 to reduce payload size
-    const frameData = canvas.toDataURL('image/jpeg', 0.8);
+    const frameData = canvas.toDataURL('image/jpeg', 0.6);
     onFrame(frameData);
 
-    // Limit frame rate
     setTimeout(() => {
       animationFrameRef.current = requestAnimationFrame(captureFrame);
     }, 1000 / fps);
@@ -57,21 +69,18 @@ export const VideoCapture: React.FC<VideoCaptureProps> = React.memo(({ onFrame, 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           
-          // Wait for video to be ready before playing
           const playPromise = videoRef.current.play();
           
           if (playPromise !== undefined) {
             playPromise
               .then(() => {
                 if (!isMounted) return;
-                // Start capturing frames once video is playing
                 if (onVideoReady && videoRef.current) {
                   onVideoReady(videoRef.current);
                 }
                 animationFrameRef.current = requestAnimationFrame(captureFrame);
               })
               .catch((error) => {
-                // Ignore play errors if component unmounted
                 if (!isMounted) return;
                 console.error('Error playing video:', error);
               });
@@ -79,7 +88,6 @@ export const VideoCapture: React.FC<VideoCaptureProps> = React.memo(({ onFrame, 
 
           videoRef.current.onloadedmetadata = () => {
             if (!isMounted || !videoRef.current) return;
-            // Start capturing once metadata is loaded
             if (!animationFrameRef.current) {
               animationFrameRef.current = requestAnimationFrame(captureFrame);
             }

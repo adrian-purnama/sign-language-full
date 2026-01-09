@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import mediapipe as mp
 from collections import deque
+from queue import Queue, Empty
 import base64
 from flask import Flask, request
 from flask_cors import CORS
@@ -13,14 +14,12 @@ import io
 import gc
 import sys
 
-# --- 1. CONFIGURATION ---
 CLASSES = ['before', 'candy', 'computer', 'cool', 'cousin', 'drink', 'go', 'help', 'thin', 'who']
 MODEL_PATH = "best_transformer_paper_spec.pth"
 CONFIDENCE_THRESHOLD = 0.7
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# --- 2. DEFINE MODEL (Must match Training EXACTLY: 6 Layers, 108 Dim) ---
 class Sign2PoseTransformer(nn.Module):
     def __init__(self, input_dim=150, num_classes=10, dim_model=108, num_heads=4, num_layers=6):
         super(Sign2PoseTransformer, self).__init__()
@@ -43,30 +42,28 @@ class Sign2PoseTransformer(nn.Module):
         out = self.fc(out.squeeze(1))
         return out
 
-# --- 3. LOAD MODELS ---
 print("Loading Models...")
 model_yolo = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
-model_yolo.classes = [0]  # Person only
+model_yolo.classes = [0]
 
 model = Sign2PoseTransformer(num_classes=len(CLASSES), input_dim=150, dim_model=108, num_layers=6).to(device)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
 model.eval()
 print("Models Loaded Successfully!")
 
-# Initialize MediaPipe
 mp_holistic = mp.solutions.holistic
-# Use static_image_mode=False for better memory efficiency in video streams
 holistic = mp_holistic.Holistic(
     static_image_mode=False,
     min_detection_confidence=0.5, 
     min_tracking_confidence=0.5,
-    model_complexity=1  # Use medium complexity (0, 1, or 2) - lower uses less memory
+    model_complexity=1
 )
 
-# Per-client sequence buffers
 client_sequences = {}
 
-# --- 4. PREPROCESSING HELPER ---
+processing_locks = {}
+frame_queues = {}
+
 def get_normalization_factors(landmarks):
     nose = np.array([landmarks[0].x, landmarks[0].y])
     left_eye = np.array([landmarks[2].x, landmarks[2].y])
@@ -81,18 +78,15 @@ def normalize_coordinates(landmark, nose, head_width):
     return [norm_x, norm_y]
 
 def process_landmarks(results):
-    """Extracts, Normalizes, and Reduces Features to 150 dims (X,Y only)"""
     if not results.pose_landmarks: return np.zeros(150)
 
     nose, head_width = get_normalization_factors(results.pose_landmarks.landmark)
     
-    # Process Pose (33 points)
     pose_flat = []
     for lm in results.pose_landmarks.landmark:
         n = normalize_coordinates(lm, nose, head_width)
         pose_flat.extend(n)
     
-    # Process Left Hand (21 points)
     lh_flat = []
     if results.left_hand_landmarks:
         for lm in results.left_hand_landmarks.landmark:
@@ -101,7 +95,6 @@ def process_landmarks(results):
     else:
         lh_flat = [0] * 42
 
-    # Process Right Hand (21 points)
     rh_flat = []
     if results.right_hand_landmarks:
         for lm in results.right_hand_landmarks.landmark:
@@ -113,7 +106,6 @@ def process_landmarks(results):
     return np.concatenate([pose_flat, lh_flat, rh_flat])
 
 def extract_keypoints_for_visualization(results, bbox):
-    """Extract keypoints in format suitable for frontend visualization"""
     keypoints = {
         'pose': None,
         'left_hand': None,
@@ -141,8 +133,6 @@ def extract_keypoints_for_visualization(results, bbox):
     return keypoints
 
 def process_frame(frame_data, client_id):
-    """Process a single frame and return detection results"""
-    # Variables to track for cleanup
     frame = None
     img_data = None
     nparr = None
@@ -156,33 +146,25 @@ def process_frame(frame_data, client_id):
     probs = None
     
     try:
-        # Decode base64 image
         try:
-            # Force garbage collection before processing to free up memory
             gc.collect()
             
-            # Remove data URL prefix if present
             if ',' in frame_data:
                 frame_data = frame_data.split(',')[1]
             
             img_data = base64.b64decode(frame_data)
             
-            # Use np.frombuffer with copy=False for better memory efficiency
-            # Then explicitly copy only when needed by cv2
             try:
                 nparr = np.frombuffer(img_data, dtype=np.uint8)
                 frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             except MemoryError as me:
-                # If memory error, try to free up and retry once
                 print(f"Memory error during image decode, attempting cleanup: {me}")
                 del img_data
                 gc.collect()
-                # Retry with fresh decode
                 img_data = base64.b64decode(frame_data.split(',')[-1] if ',' in frame_data else frame_data)
                 nparr = np.frombuffer(img_data, dtype=np.uint8)
                 frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
-            # Clean up decoded data immediately after use
             del img_data
             del nparr
             
@@ -196,7 +178,6 @@ def process_frame(frame_data, client_id):
                 }
         except MemoryError as me:
             print(f"Memory allocation error: {me}")
-            # Force aggressive cleanup
             gc.collect()
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
@@ -217,19 +198,16 @@ def process_frame(frame_data, client_id):
                 'sequence_length': len(client_sequences.get(client_id, deque(maxlen=30)))
             }
         
-        # Initialize sequence buffer for client if needed
         if client_id not in client_sequences:
             client_sequences[client_id] = deque(maxlen=30)
         
         sequence = client_sequences[client_id]
         
-        # YOLO Person Detection
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results_yolo = model_yolo(image_rgb)
         h, w, _ = frame.shape
         x1, y1, x2, y2 = 0, 0, w, h
         
-        # Extract YOLO results immediately without keeping full DataFrame
         df_yolo = results_yolo.pandas().xyxy[0]
         if not df_yolo.empty:
             best = df_yolo.iloc[0]
@@ -238,7 +216,7 @@ def process_frame(frame_data, client_id):
             best_ymin = best.ymin
             best_xmax = best.xmax
             best_ymax = best.ymax
-            del df_yolo  # Delete DataFrame immediately after extracting needed values
+            del df_yolo
             
             if best_confidence > 0.4:
                 pad = 20
@@ -249,7 +227,6 @@ def process_frame(frame_data, client_id):
         else:
             del df_yolo
         
-        # Clean up YOLO results
         del results_yolo
         del image_rgb
         
@@ -257,23 +234,18 @@ def process_frame(frame_data, client_id):
         if process_frame_crop.size == 0:
             process_frame_crop = frame
         
-        # MediaPipe Processing
         img_crop_rgb = cv2.cvtColor(process_frame_crop, cv2.COLOR_BGR2RGB)
         results = holistic.process(img_crop_rgb)
         
-        # Clean up image arrays
         del process_frame_crop
         del img_crop_rgb
         
-        # Extract keypoints for visualization (using original frame coordinates)
         keypoints = extract_keypoints_for_visualization(results, [x1, y1, x2, y2])
         
-        # Initialize default response
         detected_word = "..."
         confidence = 0.0
         
         if results.pose_landmarks:
-            # Process landmarks for model input
             keypoints_features = process_landmarks(results)
             sequence.append(keypoints_features)
             
@@ -297,7 +269,6 @@ def process_frame(frame_data, client_id):
                             if conf.item() > CONFIDENCE_THRESHOLD:
                                 detected_word = CLASSES[predicted_idx.item()]
                         
-                        # Clean up tensors immediately after inference
                         del input_tensor
                         del prediction
                         del probs
@@ -309,32 +280,28 @@ def process_frame(frame_data, client_id):
                         else:
                             raise
                     finally:
-                        # Always cleanup input_seq
                         del input_seq
                 
-                # Clear CUDA cache if using GPU
                 if device.type == 'cuda':
                     torch.cuda.empty_cache()
         
-        # Prepare result before cleanup
         result = {
             'detected_word': detected_word,
             'confidence': float(confidence),
             'bounding_box': [int(x1), int(y1), int(x2), int(y2)],
             'keypoints': keypoints,
-            'sequence_length': len(sequence)
+            'sequence_length': len(sequence),
+            'frame_width': int(w),
+            'frame_height': int(h)
         }
         
-        # Clean up frame
         del frame
         
-        # Force garbage collection
         gc.collect()
         
         return result
         
     except Exception as e:
-        # Cleanup on error - explicit cleanup of variables
         try:
             del frame
         except:
@@ -382,14 +349,12 @@ def process_frame(frame_data, client_id):
         gc.collect()
         raise e
 
-# --- 5. FLASK AND SOCKETIO SETUP ---
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint for Docker/deployment"""
     return {
         'status': 'healthy',
         'service': 'sign-language-detector-backend',
@@ -400,12 +365,23 @@ def health_check():
 def handle_connect():
     print(f"Client connected: {request.sid}")
     client_sequences[request.sid] = deque(maxlen=30)
+    processing_locks[request.sid] = False
+    frame_queues[request.sid] = Queue(maxsize=1)
 
 @socketio.on('disconnect')
 def handle_disconnect():
     print(f"Client disconnected: {request.sid}")
     if request.sid in client_sequences:
         del client_sequences[request.sid]
+    if request.sid in processing_locks:
+        del processing_locks[request.sid]
+    if request.sid in frame_queues:
+        try:
+            while True:
+                frame_queues[request.sid].get_nowait()
+        except Empty:
+            pass
+        del frame_queues[request.sid]
 
 @socketio.on('frame')
 def handle_frame(data):
@@ -414,13 +390,64 @@ def handle_frame(data):
         if not frame_data:
             return
         
-        result = process_frame(frame_data, request.sid)
-        emit('result', result)
+        client_id = request.sid
+        
+        if client_id not in frame_queues:
+            frame_queues[client_id] = Queue(maxsize=1)
+            processing_locks[client_id] = False
+        
+        try:
+            frame_queues[client_id].put_nowait(frame_data)
+        except:
+            try:
+                frame_queues[client_id].get_nowait()
+                frame_queues[client_id].put_nowait(frame_data)
+            except:
+                pass
+        
+        if processing_locks[client_id]:
+            return
+        
+        try:
+            latest_frame = frame_queues[client_id].get_nowait()
+        except Empty:
+            return
+        
+        processing_locks[client_id] = True
+        
+        try:
+            result = process_frame(latest_frame, client_id)
+            emit('result', result)
+        finally:
+            processing_locks[client_id] = False
+            
     except Exception as e:
         print(f"Error processing frame: {e}")
         emit('error', {'message': str(e)})
-        # Force garbage collection on error
+        if request.sid in processing_locks:
+            processing_locks[request.sid] = False
         gc.collect()
+
+@socketio.on('chat_message')
+def handle_chat_message(data):
+    try:
+        message_text = data.get('text', '').strip()
+        if not message_text:
+            return
+        
+        import time
+        message_data = {
+            'text': message_text,
+            'sender': 'user',
+            'timestamp': int(time.time() * 1000)
+        }
+        
+        socketio.emit('chat_message', message_data)
+        print(f"Chat message broadcast: {message_text[:50]}...")
+        
+    except Exception as e:
+        print(f"Error handling chat message: {e}")
+        emit('error', {'message': str(e)})
 
 if __name__ == '__main__':
     import os

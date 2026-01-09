@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AppSettings } from '../utils/storage';
-import { FaCog, FaVideo, FaEye, FaSquare, FaHistory, FaChartLine, FaUndo, FaExclamationTriangle, FaKey } from 'react-icons/fa';
+import { FaCog, FaVideo, FaEye, FaHistory, FaChartLine, FaUndo, FaUser } from 'react-icons/fa';
 import '../styles/animations.css';
 
 interface SettingsPanelProps {
@@ -75,22 +75,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({
           <div className="setting-group">
             <label className="setting-toggle">
               <span>
-                <FaSquare />
-                Show Bounding Box
-              </span>
-              <input
-                type="checkbox"
-                checked={settings.showBoundingBox}
-                onChange={() => handleToggle('showBoundingBox')}
-                className="toggle-input"
-              />
-              <span className="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div className="setting-group">
-            <label className="setting-toggle">
-              <span>
                 <FaHistory />
                 Record Detection History
               </span>
@@ -125,51 +109,26 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({
             </div>
           </div>
 
-          <div className="setting-group" style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '16px', marginTop: '8px' }}>
+          <div className="setting-group">
             <label className="setting-toggle">
               <span>
-                <FaExclamationTriangle />
-                Emergency Mode (Gemini AI)
+                <FaUser />
+                I am a disabled user (sign language user)
               </span>
               <input
                 type="checkbox"
-                checked={settings.emergencyMode}
-                onChange={() => handleToggle('emergencyMode')}
+                checked={settings.isDisabled}
+                onChange={() => handleToggle('isDisabled')}
                 className="toggle-input"
               />
               <span className="toggle-slider"></span>
             </label>
-            <div className="setting-hint" style={{ marginTop: '8px' }}>
-              Uses Google Gemini for real-time translation (requires API key)
+            <div className="setting-hint">
+              {settings.isDisabled 
+                ? 'You will receive messages from others' 
+                : 'You can send messages to disabled users'}
             </div>
           </div>
-
-          {settings.emergencyMode && (
-            <div className="setting-group">
-              <label className="setting-label">
-                <FaKey />
-                Gemini API Key
-              </label>
-              <input
-                type="password"
-                value={settings.geminiApiKey}
-                onChange={(e) => onSettingsChange({ geminiApiKey: e.target.value })}
-                placeholder="Enter your Gemini API key"
-                style={{
-                  width: '100%',
-                  padding: '10px',
-                  borderRadius: '8px',
-                  border: '1px solid var(--glass-border)',
-                  fontSize: '0.9rem',
-                  fontFamily: 'monospace',
-                  marginTop: '8px'
-                }}
-              />
-              <div className="setting-hint" style={{ marginTop: '4px' }}>
-                Get your key from: https://makersuite.google.com/app/apikey
-              </div>
-            </div>
-          )}
 
           <button className="reset-button" onClick={onReset}>
             <FaUndo />

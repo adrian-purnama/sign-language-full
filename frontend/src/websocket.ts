@@ -11,7 +11,8 @@ export class WebSocketClient {
     onResult: (result: DetectionResult) => void,
     onError: (error: string) => void,
     onConnect: () => void,
-    onDisconnect: () => void
+    onDisconnect: () => void,
+    onMessage?: (message: { text: string; sender: string; timestamp: number }) => void
   ): void {
     this.socket = io(url, {
       transports: ['websocket', 'polling'],
@@ -40,6 +41,12 @@ export class WebSocketClient {
       onError(data.message);
     });
 
+    if (onMessage) {
+      this.socket.on('chat_message', (data: { text: string; sender: string; timestamp: number }) => {
+        onMessage(data);
+      });
+    }
+
     this.socket.on('connect_error', (error) => {
       console.error('Connection error:', error);
       this.reconnectAttempts++;
@@ -47,6 +54,12 @@ export class WebSocketClient {
         onError('Failed to connect to server after multiple attempts');
       }
     });
+  }
+
+  sendMessage(message: string): void {
+    if (this.socket && this.socket.connected) {
+      this.socket.emit('chat_message', { text: message });
+    }
   }
 
   sendFrame(frameData: string): void {
